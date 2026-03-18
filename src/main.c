@@ -89,6 +89,9 @@ struct state {
         bool canPlacePoint;
 
         float zoom;
+
+        bool askForSaveFilePath;
+        char* saveFilePath;
     } editor;
 };
 
@@ -123,6 +126,86 @@ Vector2 editorPosToScreenPos(struct state* state, Vector2 editorPos) {
     };
 }
 
+const int saveVersion = 1;
+
+void saveState(struct state* state, const char* filename) {
+    FILE* file = fopen(filename, "wb");
+    if (file) {
+        #define write_field(field) fwrite(&field, sizeof(field), 1, file)
+        write_field(saveVersion);
+        write_field(state->editor.gridDimensions);
+        write_field(state->editor.layers.size);
+        for (size_t i = 0; i < array_size(&state->editor.layers); i++) {
+            struct layer s = array_get(&state->editor.layers, i);
+            write_field(s.points.size);
+            fwrite(s.points.data, sizeof(Vector2), array_size(&s.points), file);
+        }
+        #undef write_field
+
+        fclose(file);
+    }
+}
+
+void saveSvg(struct state* state) {
+    FILE* file = fopen(state->editor.saveFilePath, "w");
+    if (file) {
+        float gridStartX = (state->editorWidth / 2) - (state->editor.gridDimensions.x / 2);
+        float gridStartY = (state->editorHeight / 2) - (state->editor.gridDimensions.y / 2);
+        float gridEndX = gridStartX + state->editor.gridDimensions.x;
+        float gridEndY = gridStartY + state->editor.gridDimensions.y;
+
+        fprintf(file, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n", (int) state->editor.gridDimensions.x, (int) state->editor.gridDimensions.y);
+        for (size_t i = 0; i < array_size(&state->editor.layers); i++) {
+            struct layer s = array_get(&state->editor.layers, i);
+            for (size_t j = 0; j + 2 < array_size(&s.points); j += 2) {
+                Vector2 start = array_get(&s.points, j);
+                Vector2 control = array_get(&s.points, j + 1);
+                Vector2 end = array_get(&s.points, j + 2);
+                fprintf(file, "  <path d=\"M %.2f %.2f Q %.2f %.2f %.2f %.2f\" stroke=\"white\" fill=\"none\" />\n",
+                    start.x - gridStartX, start.y - gridStartY,
+                    control.x - gridStartX, control.y - gridStartY,
+                    end.x - gridStartX, end.y - gridStartY
+                );
+            }
+        }
+        fprintf(file, "</svg>\n");
+        fclose(file);
+    }
+}
+
+void loadState(struct state* state, const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (file) {
+        #define read_field(field) fread(&field, sizeof(field), 1, file)
+        int saveVersion;
+        read_field(saveVersion);
+        if (saveVersion != saveVersion) {
+            fclose(file);
+            fprintf(stderr, "Unsupported save version: %d\n", saveVersion);
+            return;
+        }
+        read_field(state->editor.gridDimensions);
+        size_t layerCount;
+        read_field(layerCount);
+        for (size_t i = 0; i < layerCount; i++) {
+            struct layer newLayer = { 0, 0, NULL };
+            array_push(&state->editor.layers, newLayer);
+            struct layer* s = &array_get(&state->editor.layers, array_size(&state->editor.layers) - 1);
+
+            size_t pointCount;
+            read_field(pointCount);
+            for (size_t j = 0; j < pointCount; j++) {
+                Vector2 point;
+                fread(&point, sizeof(Vector2), 1, file);
+                array_push(&s->points, point);
+            }
+        }
+        #undef read_field
+
+        fclose(file);
+    }
+}
+
 int main() {
     struct state state = {
         .screenWidth = 1600,
@@ -142,8 +225,8 @@ int main() {
 
             .layers = { 0, 0, NULL },
 
-            .gridSize = { 10, 10 },
-            .gridDimensions = { 500, 500 },
+            .gridSize = { 8, 8 },
+            .gridDimensions = { 256, 128 },
 
             .mouseDragging = false,
             .mouseDragStart = { 0, 0 },
@@ -152,16 +235,20 @@ int main() {
             .canPlacePoint = true,
 
             .zoom = 1.0f,
+
+            .saveFilePath = NULL,
         },
     };
+
+
+
+    loadState(&state, "bezier_editor_save.dat");
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     
     InitWindow(state.screenWidth, state.screenHeight, "Bezier Curve Editor");
 
     SetTargetFPS(GetMonitorRefreshRate(GetCurrentMonitor()));
-
-    SetExitKey(KEY_NULL);
 
     Font defaultFont = GetFontDefault();
 
@@ -263,7 +350,40 @@ int main() {
             state.editor.mouseDragStart = (Vector2){ -1, -1 };
         }
 
-        if (IsKeyPressed(KEY_DELETE)) {
+        if (state.editor.askForSaveFilePath) {
+            char pressed;
+            if (IsKeyPressed(KEY_BACKSPACE)) {
+                pressed = '\b';
+                goto keyBackspace;
+            } else if (IsKeyPressed(KEY_ENTER)) {
+                pressed = '\n';
+                goto keyEnter;
+            }
+            while ((pressed = GetCharPressed()) != 0) {
+                if (pressed == '\n') {
+                keyEnter:
+                    saveSvg(&state);
+                    free(state.editor.saveFilePath);
+                    state.editor.saveFilePath = NULL;
+                    state.editor.askForSaveFilePath = false;
+                } else if (pressed == '\b') {
+                keyBackspace:
+                    size_t len = strlen(state.editor.saveFilePath);
+                    if (len > 0) {
+                        state.editor.saveFilePath[len - 1] = '\0';
+                    }
+                } else {
+                    size_t len = strlen(state.editor.saveFilePath);
+                    char* newPath = realloc(state.editor.saveFilePath, len + 2);
+                    if (newPath) {
+                        state.editor.saveFilePath = newPath;
+                        state.editor.saveFilePath[len] = pressed;
+                        state.editor.saveFilePath[len + 1] = '\0';
+                    }
+                }
+            }
+
+        } else if (IsKeyPressed(KEY_DELETE)) {
             if (selectedLayer != NULL) {
                 if (array_size(&state.editor.selectedPointIndices) == 0) {
                     // If no points are selected, delete the last point of the layer. If that was the last point, delete the layer.
@@ -287,6 +407,80 @@ int main() {
                     array_free(&state.editor.selectedPointIndices);
                 }
             }
+        } else if (IsKeyDown(KEY_F)) {
+            if (selectedLayer != NULL) {
+                if (IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_RIGHT)) {
+                    // flip all points in the selected layer across the vertical axis of the grid
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.x = gridStartX + gridEndX - p.x;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                } else if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_DOWN)) {
+                    // flip all points in the selected layer across the horizontal axis of the grid
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.y = gridStartY + gridEndY - p.y;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                }
+            }
+        } else if (IsKeyDown(KEY_R)) {
+            if (selectedLayer != NULL) {
+                if (IsKeyPressed(KEY_RIGHT)) {
+                    // rotate all points in the selected layer 90 degrees counterclockwise around the center of the grid
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        float x = p.x - (state.editorWidth / 2);
+                        float y = p.y - (state.editorHeight / 2);
+                        p.x = -y + (state.editorWidth / 2);
+                        p.y = x + (state.editorHeight / 2);
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                } else if (IsKeyPressed(KEY_LEFT)) {
+                    // rotate all points in the selected layer 90 degrees clockwise around the center of the grid
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        float x = p.x - (state.editorWidth / 2);
+                        float y = p.y - (state.editorHeight / 2);
+                        p.x = y + (state.editorWidth / 2);
+                        p.y = -x + (state.editorHeight / 2);
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                }
+            }
+        } else if (IsKeyDown(KEY_M)) {
+            if (selectedLayer != NULL) {
+                if (IsKeyPressed(KEY_RIGHT)) {
+                    // move all points in the selected layer 10 units to the right
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.x += state.editor.gridSize.x;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                } else if (IsKeyPressed(KEY_LEFT)) {
+                    // move all points in the selected layer 10 units to the left
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.x -= state.editor.gridSize.x;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                } else if (IsKeyPressed(KEY_UP)) {
+                    // move all points in the selected layer 10 units up
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.y -= state.editor.gridSize.y;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                } else if (IsKeyPressed(KEY_DOWN)) {
+                    // move all points in the selected layer 10 units down
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        Vector2 p = array_get(&selectedLayer->points, i);
+                        p.y += state.editor.gridSize.y;
+                        array_get(&selectedLayer->points, i) = p;
+                    }
+                }
+            }
         } else if (IsKeyPressed(KEY_DOWN)) {
             if (state.editor.selectedLayerID < array_size(&state.editor.layers) - 1) {
                 state.editor.selectedLayerID++;
@@ -307,16 +501,21 @@ int main() {
                     array_push(&state.editor.selectedPointIndices, i);
                 }
             }
+        } else if (IsKeyPressed(KEY_S)) {
+            saveState(&state, "bezier_editor_save.dat");
+            state.editor.askForSaveFilePath = true;
+            state.editor.saveFilePath = malloc(1);
+            state.editor.saveFilePath[0] = '\0';
         }
 
         ClearBackground(state.backgroundColor);
 
-        for (int x = gridStartX; x < gridEndX; x += state.editor.gridSize.x) {
+        for (int x = gridStartX; x <= gridEndX; x += state.editor.gridSize.x) {
             Vector2 start = editorPosToScreenPos(&state, (Vector2){ x, gridStartY });
             Vector2 end = editorPosToScreenPos(&state, (Vector2){ x, gridEndY });
             DrawLineV(start, end, state.gridColor);
         }
-        for (int y = gridStartY; y < gridEndY; y += state.editor.gridSize.y) {
+        for (int y = gridStartY; y <= gridEndY; y += state.editor.gridSize.y) {
             Vector2 start = editorPosToScreenPos(&state, (Vector2){ gridStartX, y });
             Vector2 end = editorPosToScreenPos(&state, (Vector2){ gridEndX, y });
             DrawLineV(start, end, state.gridColor);
@@ -404,31 +603,17 @@ int main() {
             DrawText(layerLabel, textPosition.x, textPosition.y, 20, textColor);
         }
 
-        if (IsKeyPressed(KEY_S)) {
-            const char* filename = TextFormat("bezier_editor_save_%lld.svg", (long long) time(NULL));
-            FILE* file = fopen(filename, "w");
-            if (file) {
-                fprintf(file, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n", (int) state.editor.gridDimensions.x, (int) state.editor.gridDimensions.y);
-                for (size_t i = 0; i < array_size(&state.editor.layers); i++) {
-                    struct layer s = array_get(&state.editor.layers, i);
-                    for (size_t j = 0; j + 2 < array_size(&s.points); j += 2) {
-                        Vector2 start = array_get(&s.points, j);
-                        Vector2 control = array_get(&s.points, j + 1);
-                        Vector2 end = array_get(&s.points, j + 2);
-                        fprintf(file, "  <path d=\"M %.2f %.2f Q %.2f %.2f %.2f %.2f\" stroke=\"white\" fill=\"transparent\" />\n",
-                            start.x - gridStartX, start.y - gridStartY,
-                            control.x - gridStartX, control.y - gridStartY,
-                            end.x - gridStartX, end.y - gridStartY
-                        );
-                    }
-                }
-                fprintf(file, "</svg>\n");
-                fclose(file);
-            }
+        if (state.editor.askForSaveFilePath) {
+            const char* fileName = TextFormat("Name: %s", state.editor.saveFilePath);
+            Vector2 textSize = MeasureTextEx(defaultFont, fileName, 20, 1);
+            Vector2 textPosition = { (state.screenWidth - textSize.x) / 2, (state.screenHeight - textSize.y) / 2 };
+            DrawText(fileName, textPosition.x, textPosition.y, 20, state.pointColor);
         }
 
         EndDrawing();
     }
+
+    saveState(&state, "bezier_editor_save.dat");
 
     return 0;
 }

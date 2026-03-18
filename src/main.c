@@ -427,8 +427,6 @@ int main() {
             }
         }
 
-        DrawFPS(10, 10 + 30 * array_size(&state.editor.layers) + 30);
-
         EndDrawing();
     }
 

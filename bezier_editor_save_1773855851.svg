@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
-  <path d="M 190.00 330.00 Q 90.00 200.00 130.00 140.00" stroke="white" fill="transparent" />
-  <path d="M 130.00 140.00 Q 290.00 110.00 440.00 160.00" stroke="white" fill="transparent" />
-  <path d="M 440.00 160.00 Q 400.00 250.00 370.00 290.00" stroke="white" fill="transparent" />
-  <path d="M 370.00 290.00 Q 280.00 330.00 200.00 330.00" stroke="white" fill="transparent" />
-  <path d="M 200.00 330.00 Q 200.00 330.00 190.00 330.00" stroke="white" fill="transparent" />
-</svg>

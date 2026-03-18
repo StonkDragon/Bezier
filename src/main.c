@@ -159,6 +159,8 @@ int main() {
     
     InitWindow(state.screenWidth, state.screenHeight, "Bezier Curve Editor");
 
+    SetTargetFPS(GetMonitorRefreshRate(GetCurrentMonitor()));
+
     SetExitKey(KEY_NULL);
 
     Font defaultFont = GetFontDefault();
@@ -424,6 +426,8 @@ int main() {
                 fclose(file);
             }
         }
+
+        DrawFPS(10, 10 + 30 * array_size(&state.editor.layers) + 30);
 
         EndDrawing();
     }

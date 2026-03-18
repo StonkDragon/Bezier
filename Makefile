@@ -8,6 +8,7 @@ TARGET = bin/bezier
 .PHONY: all clean
 all: $(TARGET)
 $(TARGET): $(OBJS)
+	mkdir -p $(dir $@)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 %.o: %.c
 	$(CXX) $(CFLAGS) -c $< -o $@

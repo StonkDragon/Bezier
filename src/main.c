@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include <raylib.h>
 #include <raymath.h>
@@ -126,7 +128,7 @@ Vector2 editorPosToScreenPos(struct state* state, Vector2 editorPos) {
     };
 }
 
-const int saveVersion = 1;
+const int saveVersion = 3;
 
 void saveState(struct state* state, const char* filename) {
     FILE* file = fopen(filename, "wb");
@@ -134,6 +136,7 @@ void saveState(struct state* state, const char* filename) {
         #define write_field(field) fwrite(&field, sizeof(field), 1, file)
         write_field(saveVersion);
         write_field(state->editor.gridDimensions);
+        write_field(state->editor.gridSize);
         write_field(state->editor.layers.size);
         for (size_t i = 0; i < array_size(&state->editor.layers); i++) {
             struct layer s = array_get(&state->editor.layers, i);
@@ -151,8 +154,6 @@ void saveSvg(struct state* state) {
     if (file) {
         float gridStartX = (state->editorWidth / 2) - (state->editor.gridDimensions.x / 2);
         float gridStartY = (state->editorHeight / 2) - (state->editor.gridDimensions.y / 2);
-        float gridEndX = gridStartX + state->editor.gridDimensions.x;
-        float gridEndY = gridStartY + state->editor.gridDimensions.y;
 
         fprintf(file, "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 %d %d\">\n", (int) state->editor.gridDimensions.x, (int) state->editor.gridDimensions.y);
         for (size_t i = 0; i < array_size(&state->editor.layers); i++) {
@@ -173,37 +174,103 @@ void saveSvg(struct state* state) {
     }
 }
 
+#define read_field(field) fread(&field, sizeof(field), 1, file)
+
+static void loadSaveStateVersion1(struct state* state, FILE* file) {
+    size_t layerCount;
+    read_field(layerCount);
+    for (size_t i = 0; i < layerCount; i++) {
+        struct layer newLayer = { 0, 0, NULL };
+        array_push(&state->editor.layers, newLayer);
+        struct layer* s = &array_get(&state->editor.layers, array_size(&state->editor.layers) - 1);
+
+        size_t pointCount = 0;
+        read_field(pointCount);
+        for (size_t j = 0; j < pointCount; j++) {
+            Vector2 point;
+            fread(&point, sizeof(Vector2), 1, file);
+            array_push(&s->points, point);
+        }
+    }
+}
+
+static void loadSaveStateVersion2(struct state* state, FILE* file) {
+    read_field(state->editor.gridDimensions);
+    loadSaveStateVersion1(state, file);
+}
+
+static void loadSaveStateVersion3(struct state* state, FILE* file) {
+    read_field(state->editor.gridDimensions);
+    read_field(state->editor.gridSize);
+    loadSaveStateVersion1(state, file);
+}
+
 void loadState(struct state* state, const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (file) {
-        #define read_field(field) fread(&field, sizeof(field), 1, file)
-        int saveVersion;
-        read_field(saveVersion);
-        if (saveVersion != saveVersion) {
-            fclose(file);
-            fprintf(stderr, "Unsupported save version: %d\n", saveVersion);
-            return;
+        int loadedSaveVersion = 0;
+        read_field(loadedSaveVersion);
+        printf("Loaded save version: %d\n", loadedSaveVersion);
+        switch (loadedSaveVersion) {
+            case 1:
+                loadSaveStateVersion1(state, file);
+                break;
+            case 2:
+                loadSaveStateVersion2(state, file);
+                break;
+            case 3:
+                loadSaveStateVersion3(state, file);
+                break;
+            default:
+                fprintf(stderr, "Unknown save version: %d\n", loadedSaveVersion);
+                break;
         }
-        read_field(state->editor.gridDimensions);
-        size_t layerCount;
-        read_field(layerCount);
-        for (size_t i = 0; i < layerCount; i++) {
-            struct layer newLayer = { 0, 0, NULL };
-            array_push(&state->editor.layers, newLayer);
-            struct layer* s = &array_get(&state->editor.layers, array_size(&state->editor.layers) - 1);
-
-            size_t pointCount;
-            read_field(pointCount);
-            for (size_t j = 0; j < pointCount; j++) {
-                Vector2 point;
-                fread(&point, sizeof(Vector2), 1, file);
-                array_push(&s->points, point);
-            }
-        }
-        #undef read_field
-
+        
         fclose(file);
     }
+}
+
+#undef read_field
+
+void quickSave(struct state* state) {
+    struct timespec ts = { 0, 0 };
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm = { 0 };
+    localtime_r(&ts.tv_sec, &tm);
+
+    saveState(&state, TextFormat("quicksave-%d.%02d.%02d-%02d:%02d:%02d.dat", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec));
+}
+
+void loadLastQuickSave(struct state* state) {
+    // filter files in current directory for ones that start with "quicksave-" and end with ".dat", then find the one with the last modified time and load it
+    const char* savePrefix = "quicksave-";
+    const char* saveSuffix = ".dat";
+    DIR* dir = opendir(".");
+    if (dir) {
+        struct dirent* entry = NULL;
+        char latestSaveFile[256];
+        time_t latestSaveTime = 0;
+        while ((entry = readdir(dir)) != NULL) {
+            printf("Found file: %s\n", entry->d_name);
+            if (strncmp(entry->d_name, savePrefix, strlen(savePrefix)) == 0 && strcmp(entry->d_name + strlen(entry->d_name) - strlen(saveSuffix), saveSuffix) == 0) {
+                struct stat st = { 0 };
+                if (stat(entry->d_name, &st) == 0) {
+                    if (st.st_mtime > latestSaveTime) {
+                        latestSaveTime = st.st_mtime;
+                        strncpy(latestSaveFile, entry->d_name, sizeof(latestSaveFile));
+                        latestSaveFile[sizeof(latestSaveFile) - 1] = '\0';
+                    }
+                }
+            }
+        }
+        closedir(dir);
+        if (latestSaveTime > 0) {
+            loadState(state, latestSaveFile);
+            fprintf(stderr, "Loaded quicksave: %s\n", latestSaveFile);
+            return;
+        }
+    }
+    fprintf(stderr, "No quicksave found, starting with empty state.\n");
 }
 
 int main() {
@@ -226,7 +293,7 @@ int main() {
             .layers = { 0, 0, NULL },
 
             .gridSize = { 8, 8 },
-            .gridDimensions = { 256, 128 },
+            .gridDimensions = { 128, 128 },
 
             .mouseDragging = false,
             .mouseDragStart = { 0, 0 },
@@ -235,14 +302,14 @@ int main() {
             .canPlacePoint = true,
 
             .zoom = 1.0f,
+            .askForSaveFilePath = false,
+            .saveFilePath = NULL,
 
             .saveFilePath = NULL,
         },
     };
 
-
-
-    loadState(&state, "bezier_editor_save.dat");
+    loadLastQuickSave(&state);
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     
@@ -251,6 +318,40 @@ int main() {
     SetTargetFPS(GetMonitorRefreshRate(GetCurrentMonitor()));
 
     Font defaultFont = GetFontDefault();
+
+    printf("Controls:\n");
+    printf("  - Left Click: Place points (hold ALT to snap to grid)\n");
+    printf("  - Shift + Left Click + Drag: Select points within drag area\n");
+    printf("  - Middle Click + Drag or Space + Drag: Pan\n");
+    printf("  - Mouse Wheel: Zoom in/out\n");
+    printf("  - Arrow Keys: Move selected points, moves last placed point if none selected\n");
+    printf("  - Page Up/Page Down: Change selected layer\n");
+    printf("  - N: Create new layer\n");
+    printf("  - S: Save (will ask for file name)\n");
+    printf("  - F: Flip selected points (use arrow keys to choose axis: LEFT/RIGHT for X-axis, UP/DOWN for Y-axis)\n");
+    printf("  - R: Rotate selected points 90 degrees (use arrow keys to choose direction: LEFT for counterclockwise, RIGHT for clockwise)\n");
+    printf("  - M: Move all points in selected layer by one grid unit (use arrow keys to choose direction)\n");
+    printf("  - Ctrl + Arrow Keys: Resize grid dimensions\n");
+    printf("  - Ctrl + Shift + Arrow Keys: Resize grid cell size\n");
+    printf("  - Delete: Delete selected points, deletes last point if none selected, deletes layer if no points left\n");
+    printf("  - File Drop: Load .dat save file\n");
+
+    printf("state:\n");
+    printf("  - screenWidth: %d\n", state.screenWidth);
+    printf("  - screenHeight: %d\n", state.screenHeight);
+    printf("  - editorWidth: %d\n", state.editorWidth);
+    printf("  - editorHeight: %d\n", state.editorHeight);
+    printf("  - editorOffset: (%f, %f)\n", state.editorOffset.x, state.editorOffset.y);
+    printf("  - backgroundColor: (%d, %d, %d, %d)\n", state.backgroundColor.r, state.backgroundColor.g, state.backgroundColor.b, state.backgroundColor.a);
+    printf("  - editor:\n");
+    printf("    - gridSize: (%f, %f)\n", state.editor.gridSize.x, state.editor.gridSize.y);
+    printf("    - gridDimensions: (%f, %f)\n", state.editor.gridDimensions.x, state.editor.gridDimensions.y);
+    printf("    - zoom: %f\n", state.editor.zoom);
+    printf("    - layers count: %zu\n", array_size(&state.editor.layers));
+    printf("    - selectedLayerID: %zu\n", state.editor.selectedLayerID);
+    printf("    - askForSaveFilePath: %d\n", state.editor.askForSaveFilePath);
+    printf("    - saveFilePath: %s\n", state.editor.saveFilePath ? state.editor.saveFilePath : "NULL");
+    printf("\n");
 
     while (!WindowShouldClose()) {
         BeginDrawing();
@@ -350,7 +451,20 @@ int main() {
             state.editor.mouseDragStart = (Vector2){ -1, -1 };
         }
 
-        if (state.editor.askForSaveFilePath) {
+        if (IsFileDropped()) {
+            FilePathList droppedFiles = LoadDroppedFiles();
+            if (droppedFiles.count > 0) {
+                quickSave(&state);
+                if (strstr(droppedFiles.paths[0], ".dat") != NULL) {
+                    loadState(&state, droppedFiles.paths[0]);
+                } else if (strstr(droppedFiles.paths[0], ".svg") != NULL) {
+                    fprintf(stderr, "Importing SVG files is not supported yet.\n");
+                } else {
+                    fprintf(stderr, "Unsupported file type: %s\n", droppedFiles.paths[0]);
+                }
+            }
+            UnloadDroppedFiles(droppedFiles);
+        } else if (state.editor.askForSaveFilePath) {
             char pressed;
             if (IsKeyPressed(KEY_BACKSPACE)) {
                 pressed = '\b';
@@ -363,11 +477,12 @@ int main() {
                 if (pressed == '\n') {
                 keyEnter:
                     saveSvg(&state);
+                    saveState(&state, TextFormat("%s.dat", state.editor.saveFilePath));
                     free(state.editor.saveFilePath);
                     state.editor.saveFilePath = NULL;
                     state.editor.askForSaveFilePath = false;
                 } else if (pressed == '\b') {
-                keyBackspace:
+                keyBackspace: (void) 0; // stops clang warning about label with statements after it
                     size_t len = strlen(state.editor.saveFilePath);
                     if (len > 0) {
                         state.editor.saveFilePath[len - 1] = '\0';
@@ -481,28 +596,91 @@ int main() {
                     }
                 }
             }
-        } else if (IsKeyPressed(KEY_DOWN)) {
-            if (state.editor.selectedLayerID < array_size(&state.editor.layers) - 1) {
-                state.editor.selectedLayerID++;
-                state.editor.selectedPointIndices.size = 0; // Clear selected points when changing layer
-            }
-        } else if (IsKeyPressed(KEY_UP)) {
-            if (state.editor.selectedLayerID > 0) {
-                state.editor.selectedLayerID--;
-                state.editor.selectedPointIndices.size = 0; // Clear selected points when changing layer
-            }
         } else if (IsKeyPressed(KEY_N)) {
             struct layer newLayer = { 0, 0, NULL };
             array_push(&state.editor.layers, newLayer);
             state.editor.selectedLayerID = array_size(&state.editor.layers) - 1;
         } else if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
-            if (selectedLayer != NULL && IsKeyPressed(KEY_A)) {
-                for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
-                    array_push(&state.editor.selectedPointIndices, i);
+            if (IsKeyPressed(KEY_A)) {
+                if (selectedLayer != NULL) {
+                    for (size_t i = 0; i < array_size(&selectedLayer->points); i++) {
+                        array_push(&state.editor.selectedPointIndices, i);
+                    }
+                }
+            } else if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
+                if (IsKeyPressed(KEY_LEFT)) {
+                    state.editor.gridSize.x /= 2;
+                } else if (IsKeyPressed(KEY_RIGHT)) {
+                    state.editor.gridSize.x *= 2;
+                } else if (IsKeyPressed(KEY_UP)) {
+                    state.editor.gridSize.y /= 2;
+                } else if (IsKeyPressed(KEY_DOWN)) {
+                    state.editor.gridSize.y *= 2;
+                }
+                if (state.editor.gridSize.x < 1) state.editor.gridSize.x = 1;
+                if (state.editor.gridSize.y < 1) state.editor.gridSize.y = 1;
+                if (state.editor.gridSize.x > 64) state.editor.gridSize.x = 64;
+                if (state.editor.gridSize.y > 64) state.editor.gridSize.y = 64;
+            } else if (IsKeyPressed(KEY_LEFT)) {
+                state.editor.gridDimensions.x -= state.editor.gridSize.x * 2;
+            } else if (IsKeyPressed(KEY_RIGHT)) {
+                state.editor.gridDimensions.x += state.editor.gridSize.x * 2;
+            } else if (IsKeyPressed(KEY_UP)) {
+                state.editor.gridDimensions.y -= state.editor.gridSize.y * 2;
+            } else if (IsKeyPressed(KEY_DOWN)) {
+                state.editor.gridDimensions.y += state.editor.gridSize.y * 2;
+            }
+        } else if (IsKeyPressed(KEY_LEFT)) {
+            if (array_size(&state.editor.selectedPointIndices) == 0 && array_size(&selectedLayer->points) != 0) {
+                array_get(&selectedLayer->points, array_size(&selectedLayer->points) - 1).x += state.editor.gridSize.x;
+            } else {
+                for (size_t i = 0; i < array_size(&state.editor.selectedPointIndices); i++) {
+                    Vector2 p = array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i));
+                    p.x += state.editor.gridSize.x;
+                    array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i)) = p;
                 }
             }
+        } else if (IsKeyPressed(KEY_RIGHT)) {
+            if (array_size(&state.editor.selectedPointIndices) == 0 && array_size(&selectedLayer->points) != 0) {
+                array_get(&selectedLayer->points, array_size(&selectedLayer->points) - 1).x += state.editor.gridSize.x;
+            } else {
+                for (size_t i = 0; i < array_size(&state.editor.selectedPointIndices); i++) {
+                    Vector2 p = array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i));
+                    p.x += state.editor.gridSize.x;
+                    array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i)) = p;
+                }
+            }
+        } else if (IsKeyPressed(KEY_UP)) {
+            if (array_size(&state.editor.selectedPointIndices) == 0 && array_size(&selectedLayer->points) != 0) {
+                array_get(&selectedLayer->points, array_size(&selectedLayer->points) - 1).y -= state.editor.gridSize.y;
+            } else {
+                for (size_t i = 0; i < array_size(&state.editor.selectedPointIndices); i++) {
+                    Vector2 p = array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i));
+                    p.y -= state.editor.gridSize.y;
+                    array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i)) = p;
+                }
+            }
+        } else if (IsKeyPressed(KEY_DOWN)) {
+            if (array_size(&state.editor.selectedPointIndices) == 0 && array_size(&selectedLayer->points) != 0) {
+                array_get(&selectedLayer->points, array_size(&selectedLayer->points) - 1).y += state.editor.gridSize.y;
+            } else {
+                for (size_t i = 0; i < array_size(&state.editor.selectedPointIndices); i++) {
+                    Vector2 p = array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i));
+                    p.y += state.editor.gridSize.y;
+                    array_get(&selectedLayer->points, array_get(&state.editor.selectedPointIndices, i)) = p;
+                }
+            }
+        } else if (IsKeyPressed(KEY_PAGE_DOWN)) {
+            if (state.editor.selectedLayerID < array_size(&state.editor.layers) - 1) {
+                state.editor.selectedLayerID++;
+                state.editor.selectedPointIndices.size = 0; // Clear selected points when changing layer
+            }
+        } else if (IsKeyPressed(KEY_PAGE_UP)) {
+            if (state.editor.selectedLayerID > 0) {
+                state.editor.selectedLayerID--;
+                state.editor.selectedPointIndices.size = 0; // Clear selected points when changing layer
+            }
         } else if (IsKeyPressed(KEY_S)) {
-            saveState(&state, "bezier_editor_save.dat");
             state.editor.askForSaveFilePath = true;
             state.editor.saveFilePath = malloc(1);
             state.editor.saveFilePath[0] = '\0';
@@ -613,7 +791,7 @@ int main() {
         EndDrawing();
     }
 
-    saveState(&state, "bezier_editor_save.dat");
+    quickSave(&state);
 
     return 0;
 }

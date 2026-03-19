@@ -238,7 +238,7 @@ void quickSave(struct state* state) {
     struct tm tm = { 0 };
     localtime_r(&ts.tv_sec, &tm);
 
-    saveState(&state, TextFormat("quicksave-%d.%02d.%02d-%02d:%02d:%02d.dat", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec));
+    saveState(state, TextFormat("quicksave-%d.%02d.%02d-%02d:%02d:%02d.dat", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec));
 }
 
 void loadLastQuickSave(struct state* state) {
@@ -273,7 +273,7 @@ void loadLastQuickSave(struct state* state) {
     fprintf(stderr, "No quicksave found, starting with empty state.\n");
 }
 
-int main() {
+int main(void) {
     struct state state = {
         .screenWidth = 1600,
         .screenHeight = 900,
@@ -302,9 +302,8 @@ int main() {
             .canPlacePoint = true,
 
             .zoom = 1.0f,
-            .askForSaveFilePath = false,
-            .saveFilePath = NULL,
 
+            .askForSaveFilePath = false,
             .saveFilePath = NULL,
         },
     };

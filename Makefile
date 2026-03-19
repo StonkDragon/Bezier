@@ -1,6 +1,6 @@
 CXX = clang
 LDFLAGS = -lm -lraylib
-CFLAGS = -std=gnu17 -Wall -Wextra -O2
+CFLAGS = -std=gnu17 -Wall -Wextra -O2 -Wall -Wextra -Werror -pedantic
 FILES = $(wildcard src/*.c)
 OBJS = $(FILES:.c=.o)
 TARGET = bin/bezier
